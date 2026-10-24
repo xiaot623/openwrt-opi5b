@@ -8,7 +8,16 @@
 # This file is a part of the make OpenWrt for Amlogic s9xxx tv box
 # https://github.com/ophub/amlogic-s9xxx-openwrt
 #
-# Description: Expand TF/SD/USB storage with additional partitions
+# Description: Lay out the TF/SD/USB storage on first boot
+#
+#   p1  BOOT      (from the image)
+#   p2  ROOTFS1   grown to ROOT_MIB, the running system, btrfs
+#   p3  ROOTFS2   ROOT_MIB, standby system for A/B online upgrade, btrfs
+#   p4  SHARED    everything that is left, ext4
+#
+# p3 and p4 are mounted by block-mount (anon_mount) on /mnt/<disk>p3 and /mnt/<disk>p4,
+# which is where the openwrt-update-* scripts expect them.
+#
 # Copyright (C) 2021- https://github.com/unifreq/openwrt_packit
 # Copyright (C) 2021- https://github.com/ophub/amlogic-s9xxx-openwrt
 #
@@ -18,6 +27,13 @@
 #
 # Automatically expand partition flag file
 todo_rootfs_resize="/root/.todo_rootfs_resize"
+# Set when the kernel has to be rebooted to see the new partition table
+reboot_flag="/root/.rootfs_resize_rebooted"
+#
+# Partition sizes (Unit: MiB)
+ROOT_MIB="5120"
+# The data partition needs at least this much room
+MIN_DATA_MIB="1024"
 #
 # Set font color
 STEPS="[\033[95m STEPS \033[0m]"
@@ -70,100 +86,149 @@ do_checkdisk() {
     esac
     echo -e "${INFO} OpenWrt storage device: [ ${LB_PRE:0:-1} - /dev/${DISK_NAME} ]."
 
-    # Check whether partition is required
-    [[ -n "$(lsblk -l -o NAME | grep -oE "^${PT_PRE}4")" ]] && {
-        # Remove auto-expansion flag file
-        rm -f ${todo_rootfs_resize}
-        echo -e "${TIPS} Partitions already exist, no action needed."
-        exit 0
-    }
+    # Tool check
+    for tool in parted btrfs mkfs.ext4 blkid; do
+        command -v "${tool}" >/dev/null 2>&1 || error_msg "Missing required tool: [ ${tool} ]."
+    done
 
     sync && sleep 3
 }
 
-# Create the 3rd and 4th partition
-create_new_partition() {
-    # Generate New UUID
-    echo -e "${STEPS} Generating new partition UUIDs..."
-    ROOTFS_UUID="$(cat /proc/sys/kernel/random/uuid)"
-    [[ -z "${ROOTFS_UUID}" ]] && ROOTFS_UUID="$(uuidgen)"
-    SHARED_UUID="$(cat /proc/sys/kernel/random/uuid)"
-    [[ -z "${SHARED_UUID}" ]] && SHARED_UUID="$(uuidgen)"
-    [[ -z "${ROOTFS_UUID}" || -z "${SHARED_UUID}" ]] && error_msg "UUID generation failed, cannot continue."
-
-    # Verify and repair disk geometry
-    echo -e "${INFO} Verifying disk geometry..."
-    printf 'f\n' | parted ---pretend-input-tty /dev/${DISK_NAME} unit MiB print || repair_status="no"
-    [[ "${repair_status}" == "no" ]] && error_msg "Disk geometry repair failed, aborting partitioning."
-
-    # Calculate partition layout
-    echo -e "${INFO} Calculating partition layout..."
-    END_P2="$(fdisk -l | grep "/dev/${PT_PRE}2" | sed -n '$p' | awk '{print $3}' | xargs)"
-    [[ -z "${END_P2}" || -z "$(echo ${END_P2} | sed -n "/^[0-9]\+$/p")" ]] && error_msg "Unable to determine partition starting position!"
-    START_P3="$(((END_P2 + 1) / 2048 + 1))"
-
-    # Create new partitions
-    echo -e "${INFO} Creating new partitions..."
-    ROOTFS_MB="1024"
-    parted /dev/${DISK_NAME} mkpart primary btrfs $((START_P3))MiB $((START_P3 + ROOTFS_MB - 1))MiB 2>/dev/null
-    parted /dev/${DISK_NAME} mkpart primary btrfs $((START_P3 + ROOTFS_MB))MiB 100% 2>/dev/null
-
-    echo -e "${INFO} Formatting new partitions..."
-    # Format the third partition
-    mkdir -p /mnt/${PT_PRE}3
-    umount -f /dev/${PT_PRE}3 2>/dev/null
-    mkfs.btrfs -f -U ${ROOTFS_UUID} -L "${LB_PRE}ROOTFS2" -m single "/dev/${PT_PRE}3" >/dev/null 2>&1
-    mount | grep "/mnt/${PT_PRE}3" >/dev/null || mount -t btrfs -o compress=zstd:6 "/dev/${PT_PRE}3" "/mnt/${PT_PRE}3"
-
-    # Format the fourth partition
-    mkdir -p /mnt/${PT_PRE}4
-    umount -f /dev/${PT_PRE}4 2>/dev/null
-    mkfs.btrfs -f -U ${SHARED_UUID} -L "${LB_PRE}SHARED" -m single "/dev/${PT_PRE}4" >/dev/null 2>&1
-    mount | grep "/mnt/${PT_PRE}4" >/dev/null || mount -t btrfs -o compress=zstd:6 "/dev/${PT_PRE}4" "/mnt/${PT_PRE}4"
-
-    # Adjust docker data storage location
-    [[ -f "/etc/init.d/dockerd" ]] && {
-        echo -e "${INFO} Adjusting Docker storage settings..."
-        /etc/init.d/dockerd stop 2>/dev/null
-        /etc/init.d/dockerd disable 2>/dev/null
-        rm -rf "/opt/docker" 2>/dev/null
-        mkdir -p /mnt/${PT_PRE}4/docker
-        ln -sf "/mnt/${PT_PRE}4/docker/" "/opt/docker"
-
-        if [[ -f "/etc/config/dockerd" ]]; then
-            uci set dockerd.@globals[0].data_root="/mnt/${PT_PRE}4/docker/"
-            uci commit dockerd
-        fi
-
-        mkdir -p /etc/docker
-        cat >/etc/docker/daemon.json <<EOF
-{
-  "bip": "172.31.0.1/24",
-  "data-root": "/mnt/${PT_PRE}4/docker/",
-  "log-level": "warn",
-  "log-driver": "json-file",
-  "log-opts": {
-     "max-size": "10m",
-     "max-file": "5"
-   },
-  "registry-mirrors": [
-     "https://mirror.baidubce.com/",
-     "https://hub-mirror.c.163.com"
-   ]
+# Read a value (in sectors) of a block device from sysfs
+sysfs_val() {
+    cat "/sys/class/block/${1}/${2}" 2>/dev/null | xargs
 }
-EOF
 
-        /etc/init.d/dockerd start 2>/dev/null
-        /etc/init.d/dockerd enable 2>/dev/null
-    }
+# Is partition number N present in the partition table?
+has_part() {
+    parted -m "/dev/${DISK_NAME}" unit s print 2>/dev/null |
+        awk -F: -v n="${1}" '$1==n {found=1} END {exit !found}'
+}
 
-    # Remove auto-expansion flag file
-    rm -f ${todo_rootfs_resize}
-    echo -e "${SUCCESS} Partitions created successfully."
+# Write the new partition table: grow p2, add p3 / p4
+update_partition_table() {
+    echo -e "${STEPS} Updating the partition table..."
+
+    # Repair the GPT backup header (the image file is smaller than the storage device)
+    printf 'f\n' | parted ---pretend-input-tty /dev/${DISK_NAME} unit MiB print >/dev/null 2>&1
+
+    [[ "$(parted -m /dev/${DISK_NAME} print 2>/dev/null | awk -F: 'NR==2 {print $6}')" == "gpt" ]] ||
+        error_msg "The partition table of [ /dev/${DISK_NAME} ] is not GPT, unable to create 4 partitions."
+
+    local mib=2048
+    local disk_sectors p2_start p2_size p2_end p3_start p3_end p4_start p4_end usable
+    disk_sectors="$(cat /sys/block/${DISK_NAME}/size 2>/dev/null | xargs)"
+    p2_start="$(sysfs_val ${PT_PRE}2 start)"
+    p2_size="$(sysfs_val ${PT_PRE}2 size)"
+    [[ -n "${disk_sectors}" && -n "${p2_start}" && -n "${p2_size}" ]] || error_msg "Unable to read the disk geometry."
+
+    # Everything is aligned to 1 MiB; the last 34 sectors belong to the GPT backup header
+    usable="$(((disk_sectors - 34) / mib * mib))"
+    p2_end="$((p2_start + ROOT_MIB * mib - 1))"
+    p3_start="$((p2_end + 1))"
+    p3_end="$((p3_start + ROOT_MIB * mib - 1))"
+    p4_start="$((p3_end + 1))"
+    p4_end="$((usable - 1))"
+
+    [[ "${p2_end}" -gt "$((p2_start + p2_size - 1))" ]] ||
+        error_msg "The rootfs partition is already larger than ${ROOT_MIB} MiB."
+    [[ "$((p4_end - p4_start + 1))" -ge "$((MIN_DATA_MIB * mib))" ]] ||
+        error_msg "The storage device is too small: needs at least $((2 * ROOT_MIB + MIN_DATA_MIB)) MiB beyond the boot area."
+
+    echo -e "${INFO} p2: ${ROOT_MIB} MiB, p3: ${ROOT_MIB} MiB, p4: $(((p4_end - p4_start + 1) / mib)) MiB."
+
+    # Grow p2 (the partition is in use, so parted may ask for confirmation)
+    parted -f -s /dev/${DISK_NAME} resizepart 2 ${p2_end}s >/dev/null 2>&1 ||
+        parted -s /dev/${DISK_NAME} resizepart 2 ${p2_end}s >/dev/null 2>&1 ||
+        printf 'Yes\n' | parted ---pretend-input-tty /dev/${DISK_NAME} resizepart 2 ${p2_end}s >/dev/null 2>&1 ||
+        error_msg "Failed to resize the rootfs partition."
+
+    parted -s /dev/${DISK_NAME} mkpart ROOTFS2 btrfs ${p3_start}s ${p3_end}s >/dev/null 2>&1 || error_msg "Failed to create p3."
+    parted -s /dev/${DISK_NAME} mkpart SHARED ext4 ${p4_start}s ${p4_end}s >/dev/null 2>&1 || error_msg "Failed to create p4."
+    sync
+
+    # Ask the kernel to re-read the table
+    if command -v partx >/dev/null 2>&1; then
+        partx -u "/dev/${DISK_NAME}" >/dev/null 2>&1
+        partx -a "/dev/${DISK_NAME}" >/dev/null 2>&1
+    fi
+    sleep 2
+}
+
+# Does the kernel see the new partitions and the new size of p2?
+kernel_sees_table() {
+    local want_end got
+    [[ -b "/dev/${PT_PRE}4" ]] || return 1
+    want_end="$(parted -m /dev/${DISK_NAME} unit s print 2>/dev/null | awk -F: '$1=="2"{gsub("s","",$3); print $3}')"
+    got="$(($(sysfs_val ${PT_PRE}2 start) + $(sysfs_val ${PT_PRE}2 size) - 1))"
+    [[ -n "${want_end}" && "${got}" == "${want_end}" ]]
+}
+
+# Grow the btrfs filesystem of the running system (p2) online
+grow_rootfs() {
+    echo -e "${STEPS} Resizing the btrfs filesystem of /..."
+    btrfs filesystem resize max / >/dev/null 2>&1 || error_msg "Failed to resize the btrfs filesystem."
+}
+
+# Create the file systems on the new partitions (only when they have none yet)
+format_partitions() {
+    echo -e "${STEPS} Formatting the new partitions..."
+
+    # p3: standby system (mounted by the anonymous mount of block-mount, which openwrt-update expects)
+    if [[ -z "$(blkid -o value -s TYPE /dev/${PT_PRE}3 2>/dev/null)" ]]; then
+        mkfs.btrfs -f -U "$(cat /proc/sys/kernel/random/uuid)" -L "${LB_PRE}ROOTFS2" -m single "/dev/${PT_PRE}3" >/dev/null 2>&1 ||
+            error_msg "Failed to format /dev/${PT_PRE}3."
+    fi
+
+    # p4: data
+    if [[ -z "$(blkid -o value -s TYPE /dev/${PT_PRE}4 2>/dev/null)" ]]; then
+        mkfs.ext4 -F -q -U "$(cat /proc/sys/kernel/random/uuid)" -L "${LB_PRE}SHARED" "/dev/${PT_PRE}4" >/dev/null 2>&1 ||
+            error_msg "Failed to format /dev/${PT_PRE}4."
+    fi
+}
+
+# Mount the new partitions right away, without waiting for the next boot
+mount_partitions() {
+    mkdir -p "/mnt/${PT_PRE}3" "/mnt/${PT_PRE}4"
+    # Standby system partition
+    mount | grep -q "/dev/${PT_PRE}3 " || mount -t btrfs -o compress=zstd:6 "/dev/${PT_PRE}3" "/mnt/${PT_PRE}3" >/dev/null 2>&1
+    # Data partition
+    mount | grep -q "/dev/${PT_PRE}4 " || mount -t ext4 -o noatime "/dev/${PT_PRE}4" "/mnt/${PT_PRE}4" >/dev/null 2>&1
+}
+
+do_layout() {
+    # Partition 4 exists: this layout has been created already, only finish the remaining steps
+    if ! has_part 4; then
+        # Partition 3 exists but 4 does not: some other layout, do not touch it
+        if has_part 3; then
+            rm -f ${todo_rootfs_resize} ${reboot_flag}
+            echo -e "${TIPS} Partitions other than p1 and p2 already exist, no action needed."
+            exit 0
+        fi
+        update_partition_table
+    fi
+
+    if ! kernel_sees_table; then
+        # The kernel can only see the new table after a reboot
+        [[ -f "${reboot_flag}" ]] && error_msg "The kernel still reports the old partition table after a reboot."
+        touch "${reboot_flag}"
+        echo -e "${TIPS} The partition table is updated, rebooting to apply it..."
+        sync && sleep 2
+        reboot
+        exit 0
+    fi
+
+    grow_rootfs
+    format_partitions
+    mount_partitions
+
+    rm -f ${todo_rootfs_resize} ${reboot_flag}
+    echo -e "${SUCCESS} Partitions are ready."
+    lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT "/dev/${DISK_NAME}" 2>/dev/null
 }
 
 # Show welcome message
-echo -e "${STEPS} Welcome to the Partition Expansion Tool."
+echo -e "${STEPS} Welcome to the Partition Layout Tool."
 
 do_checkdisk
-create_new_partition
+do_layout

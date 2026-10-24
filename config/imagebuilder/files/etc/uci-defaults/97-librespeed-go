@@ -1,0 +1,9 @@
+#!/bin/sh
+# LAN speed test server (LibreSpeed): the package ships it disabled, listening on :8989 when on.
+# Also reachable through nginx at /speedtest/ and from the LuCI menu Network -> 局域网测速.
+[ -f /etc/config/librespeed-go ] || exit 0
+uci set librespeed-go.config.enabled='1'
+# Served below /speedtest/ by nginx (etc/nginx/conf.d/librespeed.locations)
+uci set librespeed-go.config.url_base='/speedtest'
+uci commit librespeed-go
+exit 0

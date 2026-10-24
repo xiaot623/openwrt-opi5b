@@ -1,0 +1,8 @@
+{
+	"luci-app-librespeed-go": {
+		"description": "Grant access to the LibreSpeed LAN speed test page",
+		"read": {
+			"uci": [ "librespeed-go" ]
+		}
+	}
+}

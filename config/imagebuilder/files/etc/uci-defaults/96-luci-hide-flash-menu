@@ -1,0 +1,16 @@
+#!/bin/sh
+# Hide System -> "Backup / Flash Firmware" by default. Its firmware flashing goes through sysupgrade,
+# which is not how this image is updated (see openwrt-update-rockchip).
+#
+# Show the menu again:
+#   uci set luci.main.menu_flash='yes' && uci commit luci
+
+menu="/usr/share/luci/menu.d/luci-mod-system.json"
+[ -f "${menu}" ] || exit 0
+
+tmp="$(mktemp)"
+jq '."admin/system/flash".depends.uci = {"luci": {"main": {"menu_flash": "yes"}}}' "${menu}" >"${tmp}" &&
+    [ -s "${tmp}" ] && cat "${tmp}" >"${menu}"
+rm -f "${tmp}"
+
+exit 0

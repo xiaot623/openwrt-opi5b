@@ -1,0 +1,10 @@
+#!/bin/sh
+# The kmods feed in distfeeds.list belongs to the official OpenWrt kernel (6.12), but this image runs
+# the ophub kernel. Its modules cannot be installed on it, so drop the feed to avoid apk errors.
+
+feeds="/etc/apk/repositories.d/distfeeds.list"
+[ -f "${feeds}" ] || exit 0
+
+sed -i '/\/kmods\//d' "${feeds}"
+
+exit 0

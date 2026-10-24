@@ -1,0 +1,13 @@
+{
+	"admin/network/librespeed-go": {
+		"title": "局域网测速",
+		"order": 71,
+		"action": {
+			"type": "view",
+			"path": "network/librespeed-go"
+		},
+		"depends": {
+			"acl": [ "luci-app-librespeed-go" ]
+		}
+	}
+}

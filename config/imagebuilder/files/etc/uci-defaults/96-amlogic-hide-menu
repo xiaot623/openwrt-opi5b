@@ -1,0 +1,17 @@
+#!/bin/sh
+# Hide the whole luci-app-amlogic menu by default, the same way the plugin hides its own
+# "Install OpenWrt" / "CPU Settings" entries: the menu only shows up when the uci option is "yes".
+# Updates are done with the scripts (openwrt-update-rockchip ...), which stay installed.
+#
+# Show the menu again:
+#   uci set amlogic.config.menu_amlogic='yes' && uci commit amlogic
+
+menu="/usr/share/luci/menu.d/luci-app-amlogic.json"
+[ -f "${menu}" ] || exit 0
+
+tmp="$(mktemp)"
+jq '."admin/system/amlogic".depends.uci = {"amlogic": {"config": {"menu_amlogic": "yes"}}}' "${menu}" >"${tmp}" &&
+    [ -s "${tmp}" ] && cat "${tmp}" >"${menu}"
+rm -f "${tmp}"
+
+exit 0

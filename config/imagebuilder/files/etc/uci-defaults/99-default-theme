@@ -1,0 +1,10 @@
+#!/bin/sh
+# Use Argon as the default LuCI theme (several themes are installed, and the one whose
+# first-boot script runs last would otherwise win, e.g. Material).
+
+[ -d /www/luci-static/argon ] || exit 0
+
+uci set luci.main.mediaurlbase='/luci-static/argon'
+uci commit luci
+
+exit 0
