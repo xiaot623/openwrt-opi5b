@@ -32,6 +32,7 @@
 # custom_packages         : Download and add custom packages
 # custom_config           : Load custom package configuration
 # custom_files            : Add custom overlay files
+# custom_openclash_assets : Bundle the mihomo core and geoip/geosite for OpenClash
 # rebuild_firmware        : Build firmware using Image Builder
 # custom_settings         : Apply post-build customizations
 #
@@ -134,6 +135,22 @@ custom_packages() {
         [[ "${?}" -eq "0" ]] && echo -e "${INFO} The [ ${plugin_url} ] is downloaded successfully."
     done
 
+    # Download OpenClash (apk/ipk; the unneeded type is removed below)
+    openclash_api="https://api.github.com/repos/vernesong/OpenClash/releases/latest"
+    openclash_list=($(curl -s ${openclash_api} | grep "browser_download_url" | grep -oE "https[^\"]*luci-app-openclash[^\"]*\.(ipk|apk)"))
+    for plugin_url in "${openclash_list[@]}"; do
+        curl -fsSOJL "${plugin_url}"
+        [[ "${?}" -eq "0" ]] && echo -e "${INFO} The [ ${plugin_url} ] is downloaded successfully."
+    done
+
+    # Download luci-theme-argon
+    argon_api="https://api.github.com/repos/jerrykuku/luci-theme-argon/releases/latest"
+    argon_list=($(curl -s ${argon_api} | grep "browser_download_url" | grep -oE "https[^\"]*(luci-theme-argon|luci-app-argon-config|luci-i18n-argon-config-zh-cn)[-_][^\"]*\.(ipk|apk)"))
+    for plugin_url in "${argon_list[@]}"; do
+        curl -fsSOJL "${plugin_url}"
+        [[ "${?}" -eq "0" ]] && echo -e "${INFO} The [ ${plugin_url} ] is downloaded successfully."
+    done
+
     # Download other luci-app-xxx
     # ......
 
@@ -194,6 +211,46 @@ custom_files() {
     fi
 }
 
+# Bundle the mihomo core and geoip/geosite for OpenClash into the firmware, so that the first boot
+# does not need to download them (GitHub is often unreachable from mainland China).
+# Runs on the (overseas) build host, files are placed in [ files/etc/openclash ].
+custom_openclash_assets() {
+    cd ${imagebuilder_path}
+    echo -e "${STEPS} Bundling OpenClash core and geoip/geosite..."
+
+    local oc_dir="files/etc/openclash"
+    local tmp_dir="${tmp_path}/openclash_assets"
+    mkdir -p "${oc_dir}/core" "${tmp_dir}"
+
+    # curl wrapper: retry on failure, abort the build if the file cannot be downloaded
+    oc_download() {
+        local url="${1}" dest="${2}"
+        curl -fsSL --retry 3 --retry-delay 3 --connect-timeout 20 -o "${dest}" "${url}" ||
+            error_msg "Failed to download: [ ${url} ]"
+        [[ -s "${dest}" ]] || error_msg "Downloaded file is empty: [ ${url} ]"
+        echo -e "${INFO} Downloaded: [ ${url} ] ($(du -h "${dest}" | cut -f1))"
+    }
+
+    # 1. mihomo (Meta) core for arm64, the core build maintained by OpenClash
+    #    (the same one its updater installs).
+    oc_download "https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-arm64.tar.gz" "${tmp_dir}/clash.tar.gz"
+    tar -xzf "${tmp_dir}/clash.tar.gz" -C "${tmp_dir}" || error_msg "Failed to unpack the mihomo core."
+    [[ -f "${tmp_dir}/clash" ]] || error_msg "The mihomo core is missing in the downloaded archive."
+    mv -f "${tmp_dir}/clash" "${oc_dir}/core/clash_meta"
+    chmod 755 "${oc_dir}/core/clash_meta"
+    # The binary must be a valid ELF file (arm64 cannot be executed on the build host)
+    [[ "$(head -c 4 "${oc_dir}/core/clash_meta" | tail -c 3)" == "ELF" ]] || error_msg "The mihomo core is not a valid ELF file."
+    ln -sf /etc/openclash/core/clash_meta "${oc_dir}/clash"
+
+    # 2. Geo files (same sources as the OpenClash defaults)
+    oc_download "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" "${oc_dir}/GeoIP.dat"
+    oc_download "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" "${oc_dir}/GeoSite.dat"
+
+    rm -rf "${tmp_dir}"
+    sync && sleep 1
+    echo -e "${INFO} [ ${oc_dir} ] directory contents: \n$(ls -lhR ${oc_dir} 2>/dev/null)"
+}
+
 # Rebuild OpenWrt firmware
 rebuild_firmware() {
     cd ${imagebuilder_path}
@@ -218,6 +275,8 @@ rebuild_firmware() {
         luci-proto-ncm luci-proto-openconnect luci-proto-ppp luci-proto-qmi luci-proto-relay \
         \
         luci-app-amlogic luci-i18n-amlogic-zh-cn \
+        \
+        -dnsmasq luci-app-openclash luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn \
         \
         ${config_list} \
         "
@@ -309,6 +368,7 @@ adjust_settings
 custom_packages
 custom_config
 custom_files
+custom_openclash_assets
 rebuild_firmware
 custom_settings
 #

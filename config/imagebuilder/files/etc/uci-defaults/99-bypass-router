@@ -1,0 +1,34 @@
+#!/bin/sh
+# Bypass-router defaults: the LAN port gets its IP / gateway / DNS from the
+# upstream router via DHCP, so one image works in any network environment.
+# This script runs once on first boot and is then deleted by OpenWrt.
+
+# LAN: DHCP client (address, gateway and DNS are all supplied by the main router)
+uci set network.lan.proto='dhcp'
+uci -q delete network.lan.ipaddr
+uci -q delete network.lan.netmask
+uci -q delete network.lan.gateway
+uci -q delete network.lan.dns
+uci -q delete network.lan.ip6assign
+uci set network.lan.hostname='OpenWrt-Bypass'
+uci set network.lan.peerdns='1'
+
+# Do not hand out addresses: the main router is the only DHCP server
+uci set dhcp.lan.ignore='1'
+uci -q delete dhcp.lan.dhcpv6
+uci -q delete dhcp.lan.ra
+
+# Masquerade on LAN so replies from the internet return through this device
+uci set firewall.@zone[0].masq='1'
+
+uci commit network
+uci commit dhcp
+uci commit firewall
+
+# SSH public key login for root (dropbear requires strict permissions)
+if [ -f /etc/dropbear/authorized_keys ]; then
+	chmod 700 /etc/dropbear
+	chmod 600 /etc/dropbear/authorized_keys
+fi
+
+exit 0

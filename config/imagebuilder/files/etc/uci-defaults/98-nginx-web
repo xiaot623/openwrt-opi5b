@@ -1,0 +1,25 @@
+#!/bin/sh
+# Serve LuCI (and luci-app-quickfile, which needs an nginx reverse proxy) from nginx on plain HTTP :80,
+# the same layout as the reference device. uhttpd stays installed but is disabled.
+
+[ -x /etc/init.d/nginx ] || exit 0
+
+/etc/init.d/uhttpd stop 2>/dev/null
+/etc/init.d/uhttpd disable 2>/dev/null
+
+uci -q batch <<'UCI'
+set nginx.global.uci_enable='true'
+delete nginx._lan
+delete nginx._redirect2ssl
+set nginx._lan=server
+set nginx._lan.server_name='_lan'
+add_list nginx._lan.listen='80 default_server'
+add_list nginx._lan.listen='[::]:80 default_server'
+add_list nginx._lan.include='restrict_locally'
+add_list nginx._lan.include='conf.d/*.locations'
+set nginx._lan.access_log='off; # logd openwrt'
+commit nginx
+UCI
+
+/etc/init.d/nginx enable
+exit 0

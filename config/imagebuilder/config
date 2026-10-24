@@ -528,3 +528,37 @@ CONFIG_PACKAGE_luci-i18n-wol-zh-cn=y
 # 4. Other Configuration
 CONFIG_BUSYBOX_DEFAULT_FALLOCATE=y
 # end of 4. Other Configuration
+
+#
+# 5. Packages carried over from the running device (openwrt2512 / OpenWrt 25.12.5)
+#    Only user-facing apps/tools are listed; dependencies are resolved by Image Builder.
+#    Third-party packages: luci-app-openclash / luci-theme-argon are downloaded in
+#    config/imagebuilder/imagebuilder.sh -> custom_packages(); quickfile is shipped as plain files in
+#    config/imagebuilder/files (no prebuilt apk exists). openlist is intentionally NOT included
+#    (install it manually); filebrowser is dropped in favour of quickfile.
+#
+# Applications from the official feeds
+CONFIG_PACKAGE_luci-app-attendedsysupgrade=y
+CONFIG_PACKAGE_luci-app-librespeed=y
+CONFIG_PACKAGE_luci-mod-dashboard=y
+# Web server: nginx (required by luci-app-quickfile, same as the reference device)
+CONFIG_PACKAGE_luci-nginx=y
+# OpenClash runtime dependencies
+CONFIG_PACKAGE_ruby=y
+CONFIG_PACKAGE_ruby-yaml=y
+CONFIG_PACKAGE_kmod-tun=y
+CONFIG_PACKAGE_kmod-inet-diag=y
+CONFIG_PACKAGE_kmod-nft-tproxy=y
+CONFIG_PACKAGE_ip-full=y
+CONFIG_PACKAGE_dnsmasq-full=y
+# CLI tools
+CONFIG_PACKAGE_htop=y
+CONFIG_PACKAGE_vim=y
+CONFIG_PACKAGE_screen=y
+CONFIG_PACKAGE_tcpdump=y
+CONFIG_PACKAGE_openssh-sftp-server=y
+CONFIG_PACKAGE_owut=y
+# i18n
+CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-dashboard-zh-cn=y
+# end of 5. Packages carried over from the running device

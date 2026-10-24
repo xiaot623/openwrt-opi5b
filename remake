@@ -1049,6 +1049,16 @@ refactor_bootfs() {
             "${armbianenv_conf_file}"
     }
 
+    # Board-specific (Orange-Pi-5B / RK3588S): hide the on-board eMMC from the OS so it can never be
+    # touched by mistake when running from the SD card. The eMMC is driven by the built-in
+    # sdhci-of-dwcmshc driver, while the SD slot uses dw_mmc (a different driver), so skipping
+    # this one initcall removes the eMMC while the SD card keeps working.
+    if [[ "${board}" == "orangepi-5b" && -f "${armbianenv_conf_file}" ]]; then
+        sed -i -E "s|^(extraargs=.*)$|\1 initcall_blacklist=sdhci_dwcmshc_driver_init|" "${armbianenv_conf_file}"
+        grep -q "initcall_blacklist=sdhci_dwcmshc_driver_init" "${armbianenv_conf_file}" ||
+            error_msg "Failed to add the eMMC blacklist to [ ${armbianenv_conf_file} ]."
+    fi
+
     # Check device configuration files
     [[ -f "${uenv_conf_file}" || -f "${rename_extlinux_file}" || -f "${armbianenv_conf_file}" ]] || error_msg "Missing boot configuration file [ /boot/*Env.txt ]."
 }
