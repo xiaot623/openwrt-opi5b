@@ -1,0 +1,6 @@
+#!/bin/sh
+# Enable delayed AP6275P bring-up on first boot (GPIO power + PCIe bind + bcmdhd).
+
+[ -x /etc/init.d/ap6275p-wifi ] && /etc/init.d/ap6275p-wifi enable
+
+exit 0

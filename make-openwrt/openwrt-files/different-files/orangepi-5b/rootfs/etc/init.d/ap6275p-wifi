@@ -1,0 +1,33 @@
+#!/bin/sh /etc/rc.common
+# Orange Pi 5B onboard AP6275P: power GPIO24, bind PCIe, then load bcmdhd.
+# Boot-time rk-pcie probe of fe190000 fails (LTSSM 0x3) because WIFI,poweren_gpio
+# is still an input. Do not rmmod a failed bcmdhd: cleanup oopses.
+
+START=99
+STOP=10
+
+WIFI_PWR_GPIO=24
+PCIE_DEV=fe190000.pcie
+PCIE_DRV=/sys/bus/platform/drivers/rk-pcie
+
+start() {
+	[ -e /sys/bus/platform/devices/${PCIE_DEV} ] || return 0
+
+	if [ ! -d /sys/class/gpio/gpio${WIFI_PWR_GPIO} ]; then
+		echo ${WIFI_PWR_GPIO} > /sys/class/gpio/export 2>/dev/null || true
+	fi
+	if [ -d /sys/class/gpio/gpio${WIFI_PWR_GPIO} ]; then
+		echo out > /sys/class/gpio/gpio${WIFI_PWR_GPIO}/direction
+		echo 1 > /sys/class/gpio/gpio${WIFI_PWR_GPIO}/value
+	fi
+	sleep 1
+
+	if [ ! -e /sys/bus/platform/devices/${PCIE_DEV}/driver ]; then
+		echo ${PCIE_DEV} > ${PCIE_DRV}/bind 2>/dev/null || true
+		sleep 3
+	fi
+
+	if ! grep -q '^bcmdhd ' /proc/modules; then
+		modprobe bcmdhd 2>/dev/null || true
+	fi
+}
